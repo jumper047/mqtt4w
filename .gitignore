@@ -1,0 +1,7 @@
+**__pycache__
+*.egg-info
+.evc
+**.dir-locals.el
+.projectile
+.env
+.python-version
