@@ -9,6 +9,9 @@ from xdg.BaseDirectory import save_config_path
 
 from mqtt4w import NAME
 from mqtt4w.config import load_config
+from mqtt4w.manager import ServicesManager
+
+LOG = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -21,50 +24,29 @@ def parse_args():
         help="Path to configuration file"
     )
     return args_parser.parse_args()
-
-
-async def listen_messages(client, root_topic, handlers):
-    async with client.unfiltered_messages() as messages:
-        await client.subscribe(f'{root_topic}/')
-        async for message in messages:
-            asyncio.gather(handler(message) for handler in handlers)
-            # # message.payload.decode()
-            # # message.topic
-
-
     
 
 async def async_main():
     args = parse_args()
     config = load_config(args.config)
-    logging.getLogger().setLevel('INFO')
-    logging.info(f'Configuration file {args.config} loaded')
-    while True:
+    logging.basicConfig(**config.logging.dict())
+    LOG.info(f'Configuration file {args.config} loaded successfully')
+    running = True
+    while running:
         try:
-            client_conf = config.mqtt.client.dict()
-            client = Client(**client_conf)
+            client = Client(**config.mqtt.client.dict())
             await client.connect()
-            services = []
-            handlers = []
-            tasks = set()
-            topic = config.mqtt.base_topic / config.workstation_name
-            for serv_conf in config.services.dict().values():
-                constructor = serv_conf.pop('constructor')
-                services.append(constructor(client, topic, **serv_conf))
-            if config.mqtt.discovery.enabled:
-                for service in services:
-                    tasks.add(service.advertise(config.mqtt.discovery.prefix, config.workstation_name))
-            for service in services:
-                tasks.add(asyncio.create_task(service.start()))
-                handlers.append(service.process_message)
-            tasks.add(listen_messages(client, config.mqtt.base_topic, handlers))
-            logging.info('Initializaion done, starting services.')
-            await asyncio.gather(*tasks)
+            LOG.info('Connected to MQTT server')
+            services = [cfg.create_instance() for cfg in config.services.list()]
+            base_topic = config.mqtt.base_topic
+            if config.workstation_name:
+                base_topic /= config.workstation_name
+            manager = ServicesManager(client, base_topic, services)
+            await manager.start_all()
         except MqttError as error:
-            logging.error(f'Error "{error}".')
+            LOG.error(f'Error: {error}')
             logging.info('Waiting and reconnecting')
             await asyncio.sleep(60)
-
 
 def main():
     sys.exit(asyncio.run(async_main()))

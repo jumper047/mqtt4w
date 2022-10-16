@@ -1,16 +1,33 @@
 import asyncio
-import json
 from collections import defaultdict
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from typing import AsyncGenerator, Dict, List, Set
 
 import Xlib
 from ewmh import EWMH
-from mqtt4w.helpers import make_topic
-from mqtt4w.services.common import Service, ServiceBaseModel
-from pydantic import BaseModel
+from mqtt4w.services.common import (
+    AbstractService,
+    Message,
+    Receiver,
+    ServiceBaseModel,
+    messages_for_states_generator,
+)
+from pydantic import Field
+
+ALL_WINDOWS_SUBTOPIC = "all_windows"
+ACTIVE_WINDOW_SUBTOPIC = "active_window"
+FULLSCREEN_SUBTOPIC = "fullscreen"
+TITLE_SUBTOPIC = "title"
 
 
-class WindowsTrackerService(Service):
+@dataclass
+class WindowParams:
+    title: str = ""
+    is_fullscreen: bool = False
+
+
+class WindowsTrackerService(AbstractService):
     """Exposes information about specified windows
 
     Tracker topic contains subtopics which tracking
@@ -21,57 +38,52 @@ class WindowsTrackerService(Service):
     ... but more features to come"""
 
     def __init__(
-            self,
-            client,
-            base_topic,
-            *,
-            subtopic,
-            expose_active_window, 
-            sensors
+        self,
+        *,
+        subtopic: Path,
+        expose_active_window: bool,
+        sensors: Dict[str, List[str]]
     ):
-        sensors = sensors or {}
-        self.topic = base_topic / subtopic
+        self.subtopic = subtopic
         self.ewmh = self.create_ewmh()
-        self.client = client
         self.expose_active_window = expose_active_window
         self.sensors = list(sensors.keys())
         self.tracked_titles = self.get_tracked_titles(sensors)
 
-    def create_ewmh(self):
+    def create_ewmh(self) -> EWMH:
         e = EWMH()
         root = e.display.screen().root
-        root.change_attributes(event_mask=Xlib.X.SubstructureNotifyMask)
+        root.change_attributes(event_mask=Xlib.X.SubstructureNotifyMask)  # type: ignore
         return e
 
-    def get_tracked_titles(self, sensors):
+    def get_tracked_titles(self, sensors: Dict[str, List[str]]) -> Dict[str, List[str]]:
         tracked_titles = defaultdict(lambda: [])
         for sensor_name, titles in sensors.items():
             for title in titles:
                 tracked_titles[title].append(sensor_name)
         return tracked_titles
-            
-    async def advertise(self, prefix, node_id):
-        for sensor in self.sensors:
-            config_topic = prefix / "binary_sensor" / node_id / "config"
-            state_topic = self.topic / sensor / 'state'
-            config = {
-                'name': sensor,
-                'state_topic': state_topic
-            }
-            payload = json.dumps(config)
-            await self.publish(config_topic, payload, qos=1, retain=True)
 
-    def all_windows_titles(self):
+    def all_windows_titles(self) -> Set[str]:
         titles = set()
         client_list = self.ewmh.getClientList()
         for window in client_list:
             try:
-                window_title = self.ewmh.getWmName(window).decode()
-            except Xlib.error.BadWindow:
+                window_title = self.ewmh.getWmName(window).decode()  # type: ignore
+            except Xlib.error.BadWindow:  # type: ignore
                 continue
             else:
                 titles.add(window_title)
         return titles
+
+    def get_active_window_params(self) -> WindowParams:
+        window = self.ewmh.getActiveWindow()
+        try:
+            name = self.ewmh.getWmName(window).decode()  # type: ignore
+            params = self.ewmh.getWmState(window, str=True)
+        except Xlib.error.BadWindow:  # type: ignore
+            return WindowParams()
+        is_fullscreen = "_NET_WM_STATE_FULLSCREEN" in params
+        return WindowParams(name, is_fullscreen)
 
     def sensors_states(self):
         states = {x: False for x in self.sensors}
@@ -81,27 +93,49 @@ class WindowsTrackerService(Service):
                     states[sensor] = True
         return states
 
-    async def start(self):
+    async def generate_message(self) -> AsyncGenerator[Message, None]:
         states = self.sensors_states()
-        await self.publish_binary_states(states)
+        active_win_title = ""
+        active_win_fullscreen = False
+        async for message in messages_for_states_generator(states, self.subtopic):
+            yield message
         loop = asyncio.get_running_loop()
         while True:
+            window_params = self.get_active_window_params()
+            if self.expose_active_window:
+                new_active_win_title = window_params.title
+                if active_win_title != new_active_win_title:
+                    active_win_title = new_active_win_title
+                    yield Message(
+                        str(self.subtopic / ACTIVE_WINDOW_SUBTOPIC / TITLE_SUBTOPIC),
+                        active_win_title,
+                    )
+            new_active_win_fullscreen = window_params.is_fullscreen
+            if new_active_win_fullscreen != active_win_fullscreen:
+                active_win_fullscreen = new_active_win_fullscreen
+                yield Message(
+                    str(self.subtopic / ACTIVE_WINDOW_SUBTOPIC / FULLSCREEN_SUBTOPIC),
+                    "ON" if active_win_fullscreen else "OFF",
+                )
             # await asyncio.to_thread(self.ewmh.display.next_event)
             await loop.run_in_executor(None, self.ewmh.display.next_event)
             new_states = self.sensors_states()
             changed = {t: v for t, v in new_states.items() if v != states[t]}
             if changed:
-                await self.publish_binary_states(changed)
+                async for message in messages_for_states_generator(
+                    changed, self.subtopic
+                ):
+                    yield message
             states = new_states
 
-    async def process_message(self, _):
-        return None
+    @property
+    def message_receivers(self) -> List[Receiver]:
+        return []
 
 
 class ServiceModel(ServiceBaseModel):
     _constructor = WindowsTrackerService
 
-    subtopic: str = "windows_tracker"
+    subtopic: Path = Path("windows_tracker")
     expose_active_window: bool = True
-    sensors: Optional[Dict[str, List[str]]] = None
-            
+    sensors: Dict[str, List[str]] = Field(default_factory=dict)

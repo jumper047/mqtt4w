@@ -1,26 +1,30 @@
-import subprocess
 import shutil
+import subprocess
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import AsyncGenerator, Dict, List
 
-import asyncio
 from asyncinotify import Inotify, Mask
-from mqtt4w.helpers import make_topic
-from mqtt4w.services.common import Service, ServiceBaseModel
-from pydantic import BaseModel
+from mqtt4w.services.common import (
+    AbstractService,
+    Message,
+    Receiver,
+    ServiceBaseModel,
+    messages_for_states_generator,
+)
+from pydantic import Field
 
 
 @dataclass
 class Sensor:
     entities: Dict[str, bool] = field(default_factory=dict)
-    task: Optional[asyncio.Task] = None
 
     @property
     def enabled(self):
         return any(self.entities.values())
 
 
-class FileUsageService(Service):
+class FileUsageService(AbstractService):
     """Exposes information about any file opened.
 
     This service is mostly usefull to track usage of the camera/microphone,
@@ -30,10 +34,9 @@ class FileUsageService(Service):
     # https://unix.stackexchange.com/questions/344454/how-to-know-if-my-webcam-is-used-or-not
     # https://asyncinotify.readthedocs.io/en/latest/
 
-    def __init__(self, client, base_topic, *, subtopic, sensors):
+    def __init__(self, *, subtopic, sensors):
         sensors = sensors or {}
-        self.client = client
-        self.topic = base_topic / subtopic
+        self.subtopic = subtopic
         self.sensors = self.get_sensors_struct(sensors)
         self.tracked_files = self.get_tracked_files(sensors)
         self.fuser_available = shutil.which("fuser")
@@ -54,8 +57,8 @@ class FileUsageService(Service):
 
     async def advertise(self):
         for sensor in self.sensors:
-            config_topic = self.topic / sensor / "config"
-            state_topic = self.topic / sensor / "state"
+            config_topic = self.subtopic / sensor / "config"
+            state_topic = self.subtopic / sensor / "state"
             config = {"name": sensor, "state_topic": state_topic}
             payload = json.dumps(config)
             await self.publish(config_topic, payload, qos=1, retain=True)
@@ -75,13 +78,14 @@ class FileUsageService(Service):
             states[sensor] = self.sensors[sensor].enabled
         return states
 
-    async def start(self):
+    async def generate_message(self) -> AsyncGenerator[Message, None]:
         inotify = Inotify()
         for f in self.tracked_files:
             inotify.add_watch(f, Mask.OPEN | Mask.CLOSE)
         self.set_initial_states()
         states = self.get_states()
-        await self.publish_binary_states(states)
+        async for message in messages_for_states_generator(states, self.subtopic):
+            yield message
         async for event in inotify:
             sensor = self.tracked_files[str(event.path)]
             self.sensors[sensor].entities[event.path] = event.mask == Mask.OPEN
@@ -90,28 +94,18 @@ class FileUsageService(Service):
             if states_changed:
                 for s in states_changed:
                     sensor = self.sensors[s]
-                    if sensor.task:
-                        sensor.task.cancel()
-                    state_topic = self.topic / s / "state"
-                    payload = 'ON' if states_changed[s] else 'OFF'
-                    sensor.task = asyncio.create_task(self.publish_with_delay(state_topic, payload, 1))
+                    state_topic = self.subtopic / s / "state"
+                    payload = "ON" if states_changed[s] else "OFF"
+                    yield Message(str(state_topic), payload)
                 states = new_states
 
-
-    async def publish_with_delay(self, topic, payload, delay):
-        try:
-            await asyncio.sleep(delay)
-        except asyncio.CancelledError:
-            pass
-        else:
-            await self.publish(topic, payload, qos=1)
-                
-    async def process_message(self, _):
-        return None
+    @property
+    def message_receivers(self) -> List[Receiver]:
+        return []
 
 
 class ServiceModel(ServiceBaseModel):
     _constructor = FileUsageService
-    subtopic: str = "file_usage_tracker"
-    sensors: Optional[Dict[str, List[str]]] = None
-                
+
+    subtopic: Path = Path("file_usage_tracker")
+    sensors: Dict[str, List[str]] = Field(default_factory=dict)
