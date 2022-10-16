@@ -13,7 +13,7 @@ class ServicesModel(BaseModel):
     file_usage: FileUsageModel = FileUsageModel()
 
     def list(self):
-        return [self.windows_tracker]
+        return [self.windows_tracker, self.file_usage]
 
 
 class MqttClientModel(BaseModel):
