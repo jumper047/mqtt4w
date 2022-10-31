@@ -1,15 +1,20 @@
+import asyncio
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, List
 
-from .structures import Message, Receiver
+from mqtt4w.services.common.discovery import DiscoveryEntity
+
+from .structures import Message
 
 
 class AbstractService(ABC):
-    @property
+    incoming_msg: asyncio.Queue
+    outgoing_msg: asyncio.Queue
+
     @abstractmethod
-    def message_receivers(self) -> List[Receiver]:
+    def discovery(self) -> List[DiscoveryEntity]:
         pass
 
     @abstractmethod
-    async def generate_message(self) -> AsyncGenerator[Message, None]:
+    async def start(self):
         pass

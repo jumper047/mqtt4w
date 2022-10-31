@@ -1,0 +1,4 @@
+ONLINE = "ONLINE"
+OFFLINE = "OFFLINE"
+ON = "ON"
+OFF = "OFF"

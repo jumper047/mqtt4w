@@ -9,7 +9,6 @@ from ewmh import EWMH
 from mqtt4w.services.common import (
     AbstractService,
     Message,
-    Receiver,
     ServiceBaseModel,
     messages_for_states_generator,
 )
@@ -127,10 +126,6 @@ class WindowsTrackerService(AbstractService):
                 ):
                     yield message
             states = new_states
-
-    @property
-    def message_receivers(self) -> List[Receiver]:
-        return []
 
 
 class ServiceModel(ServiceBaseModel):

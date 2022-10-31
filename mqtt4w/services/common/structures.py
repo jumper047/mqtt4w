@@ -1,15 +1,10 @@
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional, Union
 
 
 @dataclass
 class Message:
-    topic: str
-    payload: Any
-
-
-@dataclass
-class Receiver:
-    method: Callable
-    topic: str
-    filter: Optional[str] = None
+    topic: Union[Path, str]
+    payload: str
+    discovery: bool = False

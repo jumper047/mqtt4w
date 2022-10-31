@@ -1,9 +1,11 @@
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Optional
 
 import yaml
 from pydantic import BaseModel
 
+from mqtt4w.services.common.discovery import UNIQUE_ID
+from mqtt4w.services.dpms import ServiceModel as DPMSModel
 from mqtt4w.services.file_usage_tracker import ServiceModel as FileUsageModel
 from mqtt4w.services.windows_tracker import ServiceModel as WindowTrackerModel
 
@@ -11,36 +13,38 @@ from mqtt4w.services.windows_tracker import ServiceModel as WindowTrackerModel
 class ServicesModel(BaseModel):
     windows_tracker: WindowTrackerModel = WindowTrackerModel()
     file_usage: FileUsageModel = FileUsageModel()
+    dpms: DPMSModel = DPMSModel()
 
     def list(self):
-        return [self.windows_tracker, self.file_usage]
+        # return [self.windows_tracker, self.file_usage, self.dpms]
+        return [self.dpms, self.file_usage]
 
 
-class MqttClientModel(BaseModel):
+class MqttModel(BaseModel):
     hostname: str
     port: int = 1883
     username: str
     password: str
 
 
-class MqttDiscoveryModel(BaseModel):
-    enabled: bool = True
-    prefix: Path = Path("homeassistant")
-
-
-class MqttModel(BaseModel):
-    base_topic: Path = Path("mqtt4w")
-    client: MqttClientModel
-    discovery: MqttDiscoveryModel = MqttDiscoveryModel()
-
-
 class LoggingModel(BaseModel):
-    level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
+    level: str = "INFO"
+    # Should uncomment when bumping min python to 3.8
+    # level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
     filename: Optional[Path] = None
 
 
+class BaseConfig(BaseModel):
+    workstation_name: str = "workstation"
+    workstation_id: str = UNIQUE_ID
+    base_topic: Path = Path("mqtt4w")
+    discovery_enabled: bool = True
+    discovery_prefix: Path = Path("homeassistant")
+    availability_subtopic: Path = Path("available")
+
+
 class Config(BaseModel):
-    workstation_name: Optional[str] = None
+    base: BaseConfig = BaseConfig()
     mqtt: MqttModel
     logging: LoggingModel = LoggingModel()
     services: ServicesModel = ServicesModel()

@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+from asyncio import Queue
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List
@@ -8,9 +9,14 @@ from asyncinotify import Inotify, Mask
 from mqtt4w.services.common import (
     AbstractService,
     Message,
-    Receiver,
     ServiceBaseModel,
     messages_for_states_generator,
+)
+from mqtt4w.services.common.constants import OFF, ON
+from mqtt4w.services.common.discovery import (
+    DiscoveryEntity,
+    EntityType,
+    generate_subconfig,
 )
 from pydantic import Field
 
@@ -40,6 +46,8 @@ class FileUsageService(AbstractService):
         self.sensors = self.get_sensors_struct(sensors)
         self.tracked_files = self.get_tracked_files(sensors)
         self.fuser_available = shutil.which("fuser")
+        self.incoming_msg = Queue()
+        self.outgoing_msg = Queue()
 
     def get_sensors_struct(self, sensors):
         s = {x: Sensor() for x in sensors}
@@ -55,13 +63,22 @@ class FileUsageService(AbstractService):
                 tracked_files[file] = sensor_name
         return tracked_files
 
-    async def advertise(self):
+    def discovery(self) -> List[DiscoveryEntity]:
+        messages = []
+        # return messages
+
         for sensor in self.sensors:
-            config_topic = self.subtopic / sensor / "config"
-            state_topic = self.subtopic / sensor / "state"
-            config = {"name": sensor, "state_topic": state_topic}
-            payload = json.dumps(config)
-            await self.publish(config_topic, payload, qos=1, retain=True)
+            subconfig = generate_subconfig(
+                name=sensor,
+                state_topic=self.subtopic / sensor / "state",
+                payload_on=ON,
+                payload_off=OFF,
+            )
+            sensor_id = sensor
+            messages.append(
+                DiscoveryEntity(EntityType.BINARY_SENSOR, sensor_id, subconfig)
+            )
+        return messages
 
     def already_opened(self, device):
         p = subprocess.run(["fuser", device], capture_output=True)
@@ -78,14 +95,14 @@ class FileUsageService(AbstractService):
             states[sensor] = self.sensors[sensor].enabled
         return states
 
-    async def generate_message(self) -> AsyncGenerator[Message, None]:
+    async def start(self):
         inotify = Inotify()
         for f in self.tracked_files:
             inotify.add_watch(f, Mask.OPEN | Mask.CLOSE)
         self.set_initial_states()
         states = self.get_states()
         async for message in messages_for_states_generator(states, self.subtopic):
-            yield message
+            self.outgoing_msg.put_nowait(message)
         async for event in inotify:
             sensor = self.tracked_files[str(event.path)]
             self.sensors[sensor].entities[event.path] = event.mask == Mask.OPEN
@@ -95,13 +112,9 @@ class FileUsageService(AbstractService):
                 for s in states_changed:
                     sensor = self.sensors[s]
                     state_topic = self.subtopic / s / "state"
-                    payload = "ON" if states_changed[s] else "OFF"
-                    yield Message(str(state_topic), payload)
+                    payload = ON if states_changed[s] else OFF
+                    self.outgoing_msg.put_nowait(Message(str(state_topic), payload))
                 states = new_states
-
-    @property
-    def message_receivers(self) -> List[Receiver]:
-        return []
 
 
 class ServiceModel(ServiceBaseModel):
