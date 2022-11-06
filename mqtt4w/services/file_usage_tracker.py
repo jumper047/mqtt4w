@@ -7,11 +7,11 @@ from typing import AsyncGenerator, Dict, List
 
 from asyncinotify import Inotify, Mask
 from mqtt4w.services.common import (
-    AbstractService,
     Message,
     ServiceBaseModel,
     messages_for_states_generator,
 )
+from mqtt4w.services.common.baseservice import BaseService
 from mqtt4w.services.common.constants import OFF, ON
 from mqtt4w.services.common.discovery import (
     DiscoveryEntity,
@@ -30,7 +30,7 @@ class Sensor:
         return any(self.entities.values())
 
 
-class FileUsageService(AbstractService):
+class FileUsageService(BaseService):
     """Exposes information about any file opened.
 
     This service is mostly usefull to track usage of the camera/microphone,
@@ -41,13 +41,25 @@ class FileUsageService(AbstractService):
     # https://asyncinotify.readthedocs.io/en/latest/
 
     def __init__(self, *, subtopic, sensors):
+        super().__init__()
         sensors = sensors or {}
         self.subtopic = subtopic
         self.sensors = self.get_sensors_struct(sensors)
         self.tracked_files = self.get_tracked_files(sensors)
         self.fuser_available = shutil.which("fuser")
-        self.incoming_msg = Queue()
-        self.outgoing_msg = Queue()
+        self.register_discoverables()
+
+    def register_discoverables(self):
+
+        for sensor in self.sensors:
+            subconfig = generate_subconfig(
+                name=sensor,
+                state_topic=self.subtopic / sensor / "state",
+                payload_on=ON,
+                payload_off=OFF,
+            )
+            sensor_id = sensor
+            self.register_discoverable(EntityType.BINARY_SENSOR, sensor_id, subconfig)
 
     def get_sensors_struct(self, sensors):
         s = {x: Sensor() for x in sensors}
@@ -102,7 +114,7 @@ class FileUsageService(AbstractService):
         self.set_initial_states()
         states = self.get_states()
         async for message in messages_for_states_generator(states, self.subtopic):
-            self.outgoing_msg.put_nowait(message)
+            yield message
         async for event in inotify:
             sensor = self.tracked_files[str(event.path)]
             self.sensors[sensor].entities[event.path] = event.mask == Mask.OPEN
@@ -113,7 +125,7 @@ class FileUsageService(AbstractService):
                     sensor = self.sensors[s]
                     state_topic = self.subtopic / s / "state"
                     payload = ON if states_changed[s] else OFF
-                    self.outgoing_msg.put_nowait(Message(str(state_topic), payload))
+                    yield Message(str(state_topic), payload)
                 states = new_states
 
 

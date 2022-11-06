@@ -7,11 +7,11 @@ from typing import AsyncGenerator, Dict, List, Set
 import Xlib
 from ewmh import EWMH
 from mqtt4w.services.common import (
-    AbstractService,
     Message,
     ServiceBaseModel,
     messages_for_states_generator,
 )
+from mqtt4w.services.common.baseservice import BaseService
 from pydantic import Field
 
 ALL_WINDOWS_SUBTOPIC = "all_windows"
@@ -26,7 +26,7 @@ class WindowParams:
     is_fullscreen: bool = False
 
 
-class WindowsTrackerService(AbstractService):
+class WindowsTrackerService(BaseService):
     """Exposes information about specified windows
 
     Tracker topic contains subtopics which tracking

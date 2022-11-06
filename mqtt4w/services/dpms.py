@@ -7,6 +7,7 @@ from enum import IntEnum
 from pathlib import Path
 from typing import AsyncGenerator, List
 
+from mqtt4w.services.common.baseservice import BaseService
 from mqtt4w.services.common.config import ServiceBaseModel
 from mqtt4w.services.common.constants import OFF, ON
 from mqtt4w.services.common.discovery import (
@@ -19,8 +20,6 @@ from mqtt4w.services.common.discovery import (
 )
 from mqtt4w.services.common.structures import Message
 from pydantic import PositiveInt
-
-from .common import AbstractService
 
 LIBXEXT_NAME = "libXext.so"
 
@@ -37,8 +36,9 @@ class DPMS(IntEnum):
     OFF = 3
 
 
-class DPMSService(AbstractService):
+class DPMSService(BaseService):
     def __init__(self, subtopic, display, check_interval):
+        super().__init__()
         self.incoming_msg = asyncio.Queue()
         self.outgoing_msg = asyncio.Queue()
         self.subtopic = subtopic
@@ -46,6 +46,18 @@ class DPMSService(AbstractService):
         self.display = display
         self.libXext = self.get_libxext()
         self.check_interval = check_interval
+        self.register_sender_gen(self.display_states)
+        self.register_discoverables()
+
+    def register_discoverables(self):
+        dpms_id = "dpms_state"
+        subconfig = generate_subconfig(
+            "DPMS state",
+            state_topic=str(self.state_topic),
+            payload_on=ON,
+            payload_off=OFF,
+        )
+        self.register_discoverable(EntityType.BINARY_SENSOR, dpms_id, subconfig)
 
     def get_libxext(self):
         try:
@@ -78,26 +90,14 @@ class DPMSService(AbstractService):
             self.libXext.XCloseDisplay(display)  # type: ignore
         return state
 
-    def discovery(self) -> List[DiscoveryEntity]:
-        dpms_id = "dpms_state"
-        subconfig = generate_subconfig(
-            "DPMS state",
-            state_topic=str(self.state_topic),
-            payload_on=ON,
-            payload_off=OFF,
-        )
-        return [DiscoveryEntity(EntityType.BINARY_SENSOR, dpms_id, subconfig)]
-
-    async def start(self):
+    async def display_states(self):
         state = self.dpms_state()
-        self.outgoing_msg.put_nowait(Message(self.state_topic, OFF if state else ON))
+        yield Message(self.state_topic, OFF if state else ON)
         while True:
             new_state = self.dpms_state()
             if state != new_state:
                 state = new_state
-                self.outgoing_msg.put_nowait(
-                    Message(str(self.state_topic), OFF if state else ON)
-                )
+                yield Message(str(self.state_topic), OFF if state else ON)
             await asyncio.sleep(self.check_interval)
 
 

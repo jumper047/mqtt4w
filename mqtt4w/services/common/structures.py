@@ -8,3 +8,10 @@ class Message:
     topic: Union[Path, str]
     payload: str
     discovery: bool = False
+
+
+@dataclass
+class Receiver:
+    subtopic: str
+    function: Callable
+    asynchronous: bool

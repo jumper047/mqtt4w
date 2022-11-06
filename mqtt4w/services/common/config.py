@@ -1,8 +1,7 @@
 from typing import Callable, Optional
 
+from mqtt4w.services.common.baseservice import BaseService
 from pydantic import BaseModel
-
-from .abc import AbstractService
 
 
 class ServiceConfigError(Exception):
@@ -12,8 +11,8 @@ class ServiceConfigError(Exception):
 class ServiceBaseModel(BaseModel):
     _constructor: Optional[Callable] = None
 
-    def create_instance(self) -> AbstractService:
+    def create_instance(self, *args) -> BaseService:
         if self._constructor:
-            return self._constructor(**self.dict())
+            return self._constructor(*args, **self.dict())
         else:
             raise ServiceConfigError
